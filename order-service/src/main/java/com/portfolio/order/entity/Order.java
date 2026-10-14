@@ -44,6 +44,7 @@ public class Order {
 
     public Order(CreateOrderRequest dto) {
         this.customerId = dto.customerId();
+
         dto.items().forEach(i -> addItem(new OrderItem(i)));
     }
 

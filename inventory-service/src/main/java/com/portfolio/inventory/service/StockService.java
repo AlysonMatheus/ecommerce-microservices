@@ -6,10 +6,11 @@ import com.portfolio.inventory.entity.ProcessedEvent;
 import com.portfolio.inventory.entity.Stock;
 import com.portfolio.inventory.execption.StockAlreadyExistsException;
 import com.portfolio.inventory.execption.StockNotFoundException;
+import com.portfolio.inventory.messaging.config.RabbitConfig;
 import com.portfolio.inventory.messaging.event.OrderCreatedEvent;
 import com.portfolio.inventory.messaging.event.StockRejectedEvent;
 import com.portfolio.inventory.messaging.event.StockReservedEvent;
-import com.portfolio.inventory.messaging.publisher.StockEventPublisher;
+import com.portfolio.inventory.messaging.outbox.OutBoxRecorder;
 import com.portfolio.inventory.repository.ProcessedEventRepository;
 import com.portfolio.inventory.repository.StockRepository;
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,7 @@ public class StockService {
 
     private final StockRepository stockRepository;
     private final ProcessedEventRepository processedEventRepository;
-    private final StockEventPublisher publisher;
+    private final OutBoxRecorder outboxRecorder;
 
     @Transactional
     public void handleOrderCreated(OrderCreatedEvent event) {
@@ -50,32 +51,27 @@ public class StockService {
             return;
         }
 
+        processedEventRepository.save(new ProcessedEvent(event.eventId()));
+
         String reason = findRejectionReason(requested, stocks);
 
         if (reason == null) {
             requested.forEach((productId, quantity) -> stocks.get(productId).reserve(quantity));
-            processedEventRepository.save(new ProcessedEvent(event.eventId()));
-            publisher.publishReserved(StockReservedEvent.from(event.orderId()));
+
+            StockReservedEvent reserved = StockReservedEvent.from(event.orderId());
+            outboxRecorder.record(reserved.eventId(), event.orderId(),
+                    RabbitConfig.STOCK_RESERVED_KEY, reserved);
+
             log.info("Estoque reservado para o pedido {}", event.orderId());
         } else {
-            processedEventRepository.save(new ProcessedEvent(event.eventId()));
-            publisher.publishRejected(StockRejectedEvent.from(event.orderId(), reason));
+            StockRejectedEvent rejected = StockRejectedEvent.from(event.orderId(), reason);
+            outboxRecorder.record(rejected.eventId(), event.orderId(),
+                    RabbitConfig.STOCK_REJECTED_KEY, rejected);
+
             log.info("Pedido {} rejeitado: {}", event.orderId(), reason);
         }
     }
 
-    private String findRejectionReason(Map<UUID, Integer> requested, Map<UUID, Stock> stocks) {
-        for (Map.Entry<UUID, Integer> entry : requested.entrySet()) {
-            Stock stock = stocks.get(entry.getKey());
-            if (stock == null) {
-                return "Produto não encontrado: " + entry.getKey();
-            }
-            if (stock.getAvailable() < entry.getValue()) {
-                return "Estoque insuficiente para o produto " + entry.getKey();
-            }
-        }
-        return null;
-    }
     @Transactional
     public StockResponse create(StockRequest dto) {
         if (stockRepository.existsById(dto.productId())) {
@@ -95,5 +91,18 @@ public class StockService {
         return stockRepository.findAll().stream()
                 .map(StockResponse::new)
                 .toList();
+    }
+
+    private String findRejectionReason(Map<UUID, Integer> requested, Map<UUID, Stock> stocks) {
+        for (Map.Entry<UUID, Integer> entry : requested.entrySet()) {
+            Stock stock = stocks.get(entry.getKey());
+            if (stock == null) {
+                return "Produto não encontrado: " + entry.getKey();
+            }
+            if (stock.getAvailable() < entry.getValue()) {
+                return "Estoque insuficiente para o produto " + entry.getKey();
+            }
+        }
+        return null;
     }
 }
