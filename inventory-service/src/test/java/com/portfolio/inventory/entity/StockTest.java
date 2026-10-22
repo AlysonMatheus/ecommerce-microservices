@@ -232,6 +232,18 @@ class StockTest {
                 assertThat(stock.getAvailable()).isEqualTo(initialAvailable);
                 assertThat(stock.getReserved()).isEqualTo(initialReserved);
             }
+            @Test
+            @DisplayName("Não deve liberar estoque quando não existe quantidade reservada")
+            void release_withoutReservedStock_throwsException() {
+
+                Stock stock = criarStockComEstoqueDe(10);
+
+                assertThatThrownBy(() -> stock.release(1))
+                        .isInstanceOf(IllegalStateException.class);
+
+                assertThat(stock.getAvailable()).isEqualTo(10);
+                assertThat(stock.getReserved()).isZero();
+            }
         }
 
 }

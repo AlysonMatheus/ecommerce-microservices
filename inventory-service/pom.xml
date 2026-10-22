@@ -79,6 +79,17 @@
             <version>1.18.38</version> <!-- Use a versão mais recente disponível -->
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>1.15.11</version> <!-- Use a versão mais recente que suporte Java 24 -->
+        </dependency>
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy-agent</artifactId>
+            <version>1.15.11</version>
+        </dependency>
+
     </dependencies>
 
     <build>
