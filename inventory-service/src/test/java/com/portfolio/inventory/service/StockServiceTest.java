@@ -137,5 +137,87 @@ class StockServiceTest {
             assertThat(rejected.reason()).contains("Produto não encontrado").contains(productId.toString());
 
         }
+
+        @Test
+        @DisplayName("Não deve reservar, salvar nem gravar evento quando o eventId já foi processado")
+        void handleOrderCreated_alreadyProcessedEvent_doesNothing() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+
+            Stock stock = new Stock(new StockRequest(productId, 10));
+            OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
+
+            when(stockRepository.findAllByIdWithLock(anyCollection())).thenReturn(List.of(stock));
+            when(processedEventRepository.existsById(event.eventId())).thenReturn(true);
+
+            stockService.handleOrderCreated(event);
+
+            assertThat(stock.getAvailable()).as("o estoque não pode ser reservado de novo").isEqualTo(10);
+            assertThat(stock.getReserved()).isZero();
+
+            verify(processedEventRepository, never()).save(any());
+            verifyNoInteractions(outboxRecorder);
+        }
+
+        @Test
+        @DisplayName("Deve rejeitar quando a soma do mesmo produto em duas linhas excede o saldo")
+        void handleOrderCreated_sameProductTwice_sumExceedsStock_rejects() {
+
+        }
+
+        @Test
+        @DisplayName("Deve reservar a soma quando o mesmo produto aparece em duas linhas")
+        void handleOrderCreated_sameProductTwice_sumWithinStock_reservesTotal() {
+        }
+
+        @Test
+        @DisplayName("Deve gerar um eventId novo e usar o orderId como aggregateId")
+        void handleOrderCreated_anyOutcome_usesNewEventIdAndOrderIdAsAggregate() {
+        }
+
+        @Test
+        @DisplayName("Deve registrar o evento como processado também na rejeição")
+        void handleOrderCreated_rejection_stillSavesProcessedEvent() {
+        }
+    }
+
+    @Nested
+    @DisplayName("create")
+    class CreateTest {
+
+        @Test
+        @DisplayName("Deve salvar o novo produto e devolver o response")
+        void create_newProduct_savesAndReturnsResponse() {
+        }
+
+        @Test
+        @DisplayName("Deve lançar StockAlreadyExistsException sem salvar")
+        void create_existingProduct_throwsAndDoesNotSave() {
+        }
+    }
+
+    @Nested
+    @DisplayName("findById")
+    class FindByIdTest {
+
+        @Test
+        @DisplayName("Deve devolver o estoque encontrado")
+        void findById_existingProduct_returnsResponse() {
+        }
+
+        @Test
+        @DisplayName("Deve lançar StockNotFoundException quando o produto não existe")
+        void findById_unknownProduct_throwsNotFound() {
+        }
+    }
+
+    @Nested
+    @DisplayName("listAll")
+    class ListAllTest {
+
+        @Test
+        @DisplayName("Deve converter todos os estoques em responses")
+        void listAll_withStocks_returnsAllAsResponses() {
+        }
     }
 }
