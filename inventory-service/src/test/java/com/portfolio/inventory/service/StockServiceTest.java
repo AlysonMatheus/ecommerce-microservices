@@ -1,8 +1,10 @@
 package com.portfolio.inventory.service;
 
 import com.portfolio.inventory.dtos.request.StockRequest;
+import com.portfolio.inventory.dtos.response.StockResponse;
 import com.portfolio.inventory.entity.ProcessedEvent;
 import com.portfolio.inventory.entity.Stock;
+import com.portfolio.inventory.execption.StockAlreadyExistsException;
 import com.portfolio.inventory.execption.StockNotFoundException;
 import com.portfolio.inventory.messaging.config.RabbitConfig;
 import com.portfolio.inventory.messaging.event.OrderCreatedEvent;
@@ -11,11 +13,11 @@ import com.portfolio.inventory.messaging.event.StockReservedEvent;
 import com.portfolio.inventory.messaging.outbox.OutBoxRecorder;
 import com.portfolio.inventory.repository.ProcessedEventRepository;
 import com.portfolio.inventory.repository.StockRepository;
-import org.hibernate.mapping.Collection;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -27,8 +29,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -162,24 +164,116 @@ class StockServiceTest {
         @Test
         @DisplayName("Deve rejeitar quando a soma do mesmo produto em duas linhas excede o saldo")
         void handleOrderCreated_sameProductTwice_sumExceedsStock_rejects() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
 
+            Stock stock = new Stock(new StockRequest(productId, 10));
+            OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4), new OrderCreatedEvent.Item(productId, 7));
+
+            when(stockRepository.findAllByIdWithLock(anyCollection())).thenReturn(List.of(stock));
+
+            stockService.handleOrderCreated(event);
+
+            assertThat(stock.getAvailable()).as("cada linha sozinha cabia, mas a soma não").isEqualTo(10);
+            assertThat(stock.getReserved()).isZero();
+
+            ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+            verify(outboxRecorder).record(any(UUID.class), eq(orderId), eq(RabbitConfig.STOCK_REJECTED_KEY), payloadCaptor.capture());
+            verifyNoMoreInteractions(outboxRecorder);
+
+            assertThat(payloadCaptor.getValue()).isInstanceOf(StockRejectedEvent.class);
+            StockRejectedEvent rejected = (StockRejectedEvent) payloadCaptor.getValue();
+            assertThat(rejected.reason()).contains(productId.toString());
         }
 
         @Test
         @DisplayName("Deve reservar a soma quando o mesmo produto aparece em duas linhas")
         void handleOrderCreated_sameProductTwice_sumWithinStock_reservesTotal() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+
+            Stock stock = new Stock(new StockRequest(productId, 10));
+            OrderCreatedEvent event = eventWith(orderId,
+                    new OrderCreatedEvent.Item(productId, 4),
+                    new OrderCreatedEvent.Item(productId, 6));
+
+            when(stockRepository.findAllByIdWithLock(anyCollection())).thenReturn(List.of(stock));
+
+            stockService.handleOrderCreated(event);
+
+            assertThat(stock.getAvailable()).isZero();
+            assertThat(stock.getReserved()).isEqualTo(10);
+
+            ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+            verify(outboxRecorder).record(any(UUID.class), eq(orderId), eq(RabbitConfig.STOCK_RESERVED_KEY), payloadCaptor.capture());
+            verifyNoMoreInteractions(outboxRecorder);
+
+            assertThat(payloadCaptor.getValue()).isInstanceOf(StockReservedEvent.class);
         }
+
 
         @Test
         @DisplayName("Deve gerar um eventId novo e usar o orderId como aggregateId")
         void handleOrderCreated_anyOutcome_usesNewEventIdAndOrderIdAsAggregate() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+            Stock stock = new Stock(new StockRequest(productId, 10));
+            OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
+
+            when(stockRepository.findAllByIdWithLock(anyCollection())).thenReturn(List.of(stock));
+
+            stockService.handleOrderCreated(event);
+
+            ArgumentCaptor<UUID> eventIdCaptor = ArgumentCaptor.forClass(UUID.class);
+            verify(outboxRecorder).record(eventIdCaptor.capture(), eq(orderId), any(String.class), any());
+
+            assertThat(eventIdCaptor.getValue()).isNotEqualTo(event.eventId());
         }
+
 
         @Test
         @DisplayName("Deve registrar o evento como processado também na rejeição")
         void handleOrderCreated_rejection_stillSavesProcessedEvent() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+            Stock stock = new Stock(new StockRequest(productId, 2));
+            OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
+
+            when(stockRepository.findAllByIdWithLock(anyCollection())).thenReturn(List.of(stock));
+
+            stockService.handleOrderCreated(event);
+
+            verify(outboxRecorder).record(any(UUID.class), eq(orderId), eq(RabbitConfig.STOCK_REJECTED_KEY), any());
+
+            ArgumentCaptor<ProcessedEvent> processedCaptor = ArgumentCaptor.forClass(ProcessedEvent.class);
+            verify(processedEventRepository).save(processedCaptor.capture());
+            assertThat(processedCaptor.getValue().getEventId()).isEqualTo(event.eventId());
+        }
+
+        @Test
+        @DisplayName("Deve reservar cada produto quando um pedido com vários produtos cabe")
+        void handleOrderCreated_multipleProducts_allAvailable_reservesEach() {
+            UUID firstId = UUID.randomUUID();
+            UUID secondId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+
+            Stock first = new Stock(new StockRequest(firstId, 10));
+            Stock second = new Stock(new StockRequest(secondId, 5));
+            OrderCreatedEvent event = eventWith(orderId,
+                    new OrderCreatedEvent.Item(firstId, 2),
+                    new OrderCreatedEvent.Item(secondId, 3));
+
+            when(stockRepository.findAllByIdWithLock(anyCollection())).thenReturn(List.of(first, second));
+
+            stockService.handleOrderCreated(event);
+
+            assertThat(first.getAvailable()).isEqualTo(8);
+            assertThat(first.getReserved()).isEqualTo(2);
+            assertThat(second.getAvailable()).isEqualTo(2);
+            assertThat(second.getReserved()).isEqualTo(3);
         }
     }
+
 
     @Nested
     @DisplayName("create")
@@ -188,12 +282,39 @@ class StockServiceTest {
         @Test
         @DisplayName("Deve salvar o novo produto e devolver o response")
         void create_newProduct_savesAndReturnsResponse() {
+            UUID productId = UUID.randomUUID();
+            StockRequest request = new StockRequest(productId, 10);
+
+            when(stockRepository.save(any(Stock.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+            StockResponse response = stockService.create(request);
+
+            ArgumentCaptor<Stock> stockCaptor = ArgumentCaptor.forClass(Stock.class);
+            verify(stockRepository).save(stockCaptor.capture());
+            assertThat(stockCaptor.getValue().getProductId()).isEqualTo(productId);
+            assertThat(stockCaptor.getValue().getAvailable()).isEqualTo(10);
+            assertThat(stockCaptor.getValue().getReserved()).isZero();
+
+            assertThat(response.productId()).isEqualTo(productId);
+            assertThat(response.available()).isEqualTo(10);
+            assertThat(response.reserved()).isZero();
         }
 
         @Test
         @DisplayName("Deve lançar StockAlreadyExistsException sem salvar")
         void create_existingProduct_throwsAndDoesNotSave() {
+            UUID productId = UUID.randomUUID();
+            StockRequest request = new StockRequest(productId, 10);
+
+            when(stockRepository.existsById(productId)).thenReturn(true);
+
+            assertThatThrownBy(() -> stockService.create(request))
+                    .isInstanceOf(StockAlreadyExistsException.class);
+
+            verify(stockRepository, never()).save(any());
         }
+
+
     }
 
     @Nested
@@ -203,11 +324,27 @@ class StockServiceTest {
         @Test
         @DisplayName("Deve devolver o estoque encontrado")
         void findById_existingProduct_returnsResponse() {
+            UUID productId = UUID.randomUUID();
+            Stock stock = new Stock(new StockRequest(productId, 10));
+            stock.reserve(3);
+            when(stockRepository.findById(productId)).thenReturn(Optional.of(stock));
+
+            StockResponse response = stockService.findById(productId);
+            assertThat(response.productId()).isEqualTo(productId);
+            assertThat(response.available()).isEqualTo(7);
+            assertThat(response.reserved()).isEqualTo(3);
         }
 
         @Test
         @DisplayName("Deve lançar StockNotFoundException quando o produto não existe")
         void findById_unknownProduct_throwsNotFound() {
+            UUID productId = UUID.randomUUID();
+
+            when(stockRepository.findById(productId)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> stockService.findById(productId))
+                    .isInstanceOf(StockNotFoundException.class)
+                    .hasMessageContaining(productId.toString());
         }
     }
 
@@ -218,6 +355,25 @@ class StockServiceTest {
         @Test
         @DisplayName("Deve converter todos os estoques em responses")
         void listAll_withStocks_returnsAllAsResponses() {
+            UUID firstId = UUID.randomUUID();
+            UUID secondId = UUID.randomUUID();
+            Stock first = new Stock(new StockRequest(firstId, 10));
+            Stock second = new Stock(new StockRequest(secondId, 5));
+            second.reserve(2);
+
+            when(stockRepository.findAll()).thenReturn(List.of(first, second));
+
+            List<StockResponse> responses = stockService.listAll();
+
+            assertThat(responses).hasSize(2);
+            assertThat(responses.get(0).productId()).isEqualTo(firstId);
+            assertThat(responses.get(0).available()).isEqualTo(10);
+            assertThat(responses.get(0).reserved()).isZero();
+            assertThat(responses.get(1).productId()).isEqualTo(secondId);
+            assertThat(responses.get(1).available()).isEqualTo(3);
+            assertThat(responses.get(1).reserved()).isEqualTo(2);
         }
+
+
     }
 }
