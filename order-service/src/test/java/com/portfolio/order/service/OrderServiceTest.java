@@ -31,6 +31,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -116,7 +117,7 @@ class OrderServiceTest {
 
             assertThatThrownBy(() -> orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class).hasMessageContaining(orderId.toString());
 
-            CreateOrderResponse response = orderService.findById(orderId);
+
 
 
         }
@@ -141,6 +142,7 @@ class OrderServiceTest {
                     secondCustomerId,
                     List.of(new OrderItemRequest(UUID.randomUUID(), 1, new BigDecimal("20.00")))));
             second.confirm();
+
 
             ReflectionTestUtils.setField(first, "id", firstId);
             ReflectionTestUtils.setField(second, "id", secondId);
@@ -170,18 +172,42 @@ class OrderServiceTest {
         @Test
         @DisplayName("Deve confirmar um pedido pendente")
         void confirm_pendingOrder_changesStatusToConfirmed() {
+            UUID orderId = UUID.randomUUID();
+            Order order = new Order(new CreateOrderRequest(
+                    UUID.randomUUID(),
+                    List.of(new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("15.00")))));
 
+            when(orderRepository.findById(orderId)).thenReturn(Optional.of(order));
 
+            orderService.confirm(orderId);
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
         }
 
         @Test
         @DisplayName("Deve ignorar a confirmação de um pedido já resolvido, sem lançar exceção")
         void confirm_alreadyResolvedOrder_ignoresWithoutException() {
+            UUID orderId = UUID.randomUUID();
+            Order order = new Order(new CreateOrderRequest(
+                    UUID.randomUUID(),
+                    List.of(new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("15.00")))));
+            order.cancel();
+            when(orderRepository.findById(orderId)).thenReturn(Optional.of(order));
+
+            assertThatCode(()-> orderService.confirm(orderId)).doesNotThrowAnyException();
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+
         }
 
         @Test
         @DisplayName("Deve lançar OrderNotFoundException quando o pedido não existe")
         void confirm_unknownOrder_throwsOrderNotFound() {
+            UUID orderId = UUID.randomUUID();
+            when(orderRepository.findById(orderId)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class);
+
+
         }
     }
 
@@ -192,6 +218,16 @@ class OrderServiceTest {
         @Test
         @DisplayName("Deve cancelar um pedido pendente")
         void cancel_pendingOrder_changesStatusToCancelled() {
+            UUID orderId = UUID.randomUUID();
+            Order order = new Order(new CreateOrderRequest(
+                    UUID.randomUUID(),
+                    List.of(new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("15.00")))));
+
+            when(orderRepository.findById(orderId)).thenReturn(Optional.of(order));
+
+            orderService.cancel(orderId);
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
         }
 
         @Test
