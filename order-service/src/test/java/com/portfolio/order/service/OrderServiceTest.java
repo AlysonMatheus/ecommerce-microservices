@@ -205,7 +205,7 @@ class OrderServiceTest {
             UUID orderId = UUID.randomUUID();
             when(orderRepository.findById(orderId)).thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class);
+            assertThatThrownBy(() -> orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class).hasMessageContaining(orderId.toString());
 
 
         }
@@ -239,7 +239,7 @@ class OrderServiceTest {
                     List.of(new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("15.00")))));
             order.confirm();
             when(orderRepository.findById(orderId)).thenReturn(Optional.of(order));
-          assertThatCode(()-> orderService.confirm(orderId)).doesNotThrowAnyException();
+          assertThatCode(()-> orderService.cancel(orderId)).doesNotThrowAnyException();
           assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
 
 
@@ -251,7 +251,7 @@ class OrderServiceTest {
         void cancel_unknownOrder_throwsOrderNotFound() {
             UUID orderId = UUID.randomUUID();
           when(orderRepository.findById(orderId)).thenReturn(Optional.empty());
-          assertThatThrownBy(()->orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class);
+          assertThatThrownBy(()->orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class).hasMessageContaining(orderId.toString());
         }
     }
 }
