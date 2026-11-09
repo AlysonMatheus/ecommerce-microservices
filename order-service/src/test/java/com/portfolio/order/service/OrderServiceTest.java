@@ -99,7 +99,7 @@ class OrderServiceTest {
 
             when(orderRepository.findById(orderId)).thenReturn(Optional.of(order));
 
-            CreateOrderResponse response = new CreateOrderResponse(order);
+            CreateOrderResponse response = orderService.findById(orderId);
 
 
             assertThat(response.id()).isEqualTo(orderId);
@@ -233,11 +233,25 @@ class OrderServiceTest {
         @Test
         @DisplayName("Deve ignorar o cancelamento de um pedido já resolvido, sem lançar exceção")
         void cancel_alreadyResolvedOrder_ignoresWithoutException() {
+            UUID orderId = UUID.randomUUID();
+            Order order = new Order(new CreateOrderRequest(
+                    UUID.randomUUID(),
+                    List.of(new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("15.00")))));
+            order.confirm();
+            when(orderRepository.findById(orderId)).thenReturn(Optional.of(order));
+          assertThatCode(()-> orderService.confirm(orderId)).doesNotThrowAnyException();
+          assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+
+
+
         }
 
         @Test
         @DisplayName("Deve lançar OrderNotFoundException quando o pedido não existe")
         void cancel_unknownOrder_throwsOrderNotFound() {
+            UUID orderId = UUID.randomUUID();
+          when(orderRepository.findById(orderId)).thenReturn(Optional.empty());
+          assertThatThrownBy(()->orderService.findById(orderId)).isInstanceOf(OrderNotFoundException.class);
         }
     }
 }
