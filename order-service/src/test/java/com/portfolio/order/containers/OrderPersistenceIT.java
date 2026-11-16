@@ -4,6 +4,7 @@ import com.portfolio.order.dtos.request.CreateOrderRequest;
 import com.portfolio.order.dtos.request.OrderItemRequest;
 import com.portfolio.order.dtos.response.CreateOrderResponse;
 import com.portfolio.order.enums.OrderStatus;
+import com.portfolio.order.exception.OrderNotFoundException;
 import com.portfolio.order.repository.OrderRepository;
 import com.portfolio.order.service.OrderService;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,12 +21,11 @@ import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.InstanceOfAssertFactories.LOCAL_DATE;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
 @SpringBootTest
 @Import(ContainersConfig.class)
@@ -156,6 +156,15 @@ class OrderPersistenceIT {
             assertThat(response.customerId()).isEqualTo(customerId);
             assertThat(response.status()).isEqualTo(OrderStatus.PENDING);
             assertThat(response.total()).isEqualByComparingTo(new BigDecimal("30.00"));
+
+            assertThat(response.orderItems()).hasSize(1);
+
+            assertThat(response.orderItems().get(0).productId())
+                    .isEqualTo(firstProductId);
+
+            assertThat(response.orderItems().get(0).quantity())
+                    .isEqualTo(2);
+
         }
 
     }
@@ -167,16 +176,62 @@ class OrderPersistenceIT {
         @Test
         @DisplayName("Deve gravar o status CONFIRMED no banco ao confirmar um pedido pendente")
         void confirm_pendingOrder_persistsConfirmedStatus() {
+            CreateOrderRequest request = new CreateOrderRequest(UUID.randomUUID(), List.of(
+                    new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("30.00"))));
+            CreateOrderResponse created = orderService.create(request);
+
+            String statusBefore = jdbcTemplate.queryForObject(
+                    "SELECT status FROM orders WHERE id = ?",
+                    String.class, created.id());
+            assertThat(statusBefore).isEqualTo(OrderStatus.PENDING.name());
+
+            orderService.confirm(created.id());
+
+            String statusAfter = jdbcTemplate.queryForObject(
+                    "SELECT status FROM orders WHERE id = ?",
+                    String.class, created.id());
+            assertThat(statusAfter).isEqualTo(OrderStatus.CONFIRMED.name());
         }
 
         @Test
         @DisplayName("Deve gravar o status CANCELLED no banco ao cancelar um pedido pendente")
         void cancel_pendingOrder_persistsCancelledStatus() {
+            CreateOrderRequest request = new CreateOrderRequest(UUID.randomUUID(), List.of(
+                    new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("30.00"))));
+            CreateOrderResponse created = orderService.create(request);
+
+            String statusBefore = jdbcTemplate.queryForObject(
+                    "SELECT status FROM orders WHERE id = ?",
+                    String.class, created.id());
+            assertThat(statusBefore).isEqualTo(OrderStatus.PENDING.name());
+
+            orderService.cancel(created.id());
+
+            String statusAfter = jdbcTemplate.queryForObject(
+                    "SELECT status FROM orders WHERE id = ?",
+                    String.class, created.id());
+            assertThat(statusAfter).isEqualTo(OrderStatus.CANCELLED.name());
+
         }
 
         @Test
         @DisplayName("Deve manter o status no banco ao confirmar um pedido já cancelado")
         void confirm_cancelledOrder_keepsCancelledStatusInDatabase() {
+            CreateOrderRequest request = new CreateOrderRequest(UUID.randomUUID(), List.of(
+                    new OrderItemRequest(UUID.randomUUID(), 2, new BigDecimal("30.00"))));
+            CreateOrderResponse created = orderService.create(request);
+                 orderService.cancel(created.id());
+            String statusBefore = jdbcTemplate.queryForObject(
+                    "SELECT status FROM orders WHERE id = ?",
+                    String.class, created.id());
+            assertThat(statusBefore).isEqualTo(OrderStatus.CANCELLED.name());
+
+            assertThatCode(() -> orderService.confirm(created.id())).doesNotThrowAnyException();
+
+            String statusAfter = jdbcTemplate.queryForObject(
+                    "SELECT status FROM orders WHERE id = ?",
+                    String.class, created.id());
+            assertThat(statusAfter).isEqualTo(OrderStatus.CANCELLED.name());
         }
     }
 }
