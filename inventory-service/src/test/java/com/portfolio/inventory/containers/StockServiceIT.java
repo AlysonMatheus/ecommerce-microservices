@@ -112,8 +112,8 @@ class StockServiceIT {
         UUID orderId = UUID.randomUUID();
         insertStock(productId, 10);
         OrderCreatedEvent event = eventWith(orderId,
-                new OrderCreatedEvent.Item(productId, 4),
-                new OrderCreatedEvent.Item(productId, 6));
+                new OrderCreatedEvent.Item(productId, 4));
+
 
         stockService.handleOrderCreated(event);
 
@@ -172,7 +172,23 @@ class StockServiceIT {
     @Test
     @DisplayName("Deve gravar stock.rejected no outbox com o motivo da rejeição")
     void handleOrderCreated_oneItemWithoutStock_recordsStockRejectedInOutbox() {
+        UUID productId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        insertStock(productId, 2);
+        OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
 
+        stockService.handleOrderCreated(event);
+
+        Map<String, Object> row = jdbcTemplate.queryForMap(
+                "SELECT routing_key, payload FROM outbox_events WHERE aggregate_id = ?",
+                orderId);
+        String payload = (String) row.get("payload");
+
+        assertThat(row.get("routing_key")).isEqualTo(RabbitConfig.STOCK_REJECTED_KEY);
+        assertThat(payload)
+                .contains(orderId.toString())
+                .contains("Estoque insuficiente")
+                .contains(productId.toString());
     }
 
 
