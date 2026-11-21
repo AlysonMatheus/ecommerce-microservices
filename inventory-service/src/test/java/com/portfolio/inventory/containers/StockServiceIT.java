@@ -1,13 +1,12 @@
 package com.portfolio.inventory.containers;
 
 
-import com.portfolio.inventory.dtos.request.StockRequest;
-import com.portfolio.inventory.dtos.response.StockResponse;
 import com.portfolio.inventory.entity.Stock;
 import com.portfolio.inventory.messaging.config.RabbitConfig;
 import com.portfolio.inventory.messaging.event.OrderCreatedEvent;
 import com.portfolio.inventory.service.StockService;
 import org.junit.jupiter.api.BeforeEach;
+import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -199,11 +198,41 @@ class StockServiceIT {
         @Test
         @DisplayName("Deve reservar uma única vez quando o mesmo eventId é entregue duas vezes")
         void handleOrderCreated_sameEventTwice_reservesOnlyOnce() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+            insertStock(productId, 6);
+            OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
+            stockService.handleOrderCreated(event);
+            stockService.handleOrderCreated(event);
+
+            Map<String, Object> row = jdbcTemplate.queryForMap(
+                    "SELECT available, reserved FROM stock WHERE product_id = ?",
+                    productId
+            );
+            assertThat(row.get("available")).isEqualTo(2);
+            assertThat(row.get("reserved")).isEqualTo(4);
+
+
         }
 
         @Test
         @DisplayName("Deve gravar um único processed_events e um único evento no outbox")
         void handleOrderCreated_sameEventTwice_recordsOneProcessedEventAndOneOutboxEvent() {
+            UUID productId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+            insertStock(productId, 6);
+            OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
+            stockService.handleOrderCreated(event);
+            stockService.handleOrderCreated(event);
+            Integer processedEvents  = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM processed_events WHERE event_id = ?  ",Integer.class, event.eventId());
+
+            Integer outboxEvents = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ? AND routing_key =? ", Integer.class, orderId,"stock.reserved");
+
+            assertThat(processedEvents).isEqualTo(1);
+            assertThat(outboxEvents).isEqualTo(1);
+
         }
     }
 
