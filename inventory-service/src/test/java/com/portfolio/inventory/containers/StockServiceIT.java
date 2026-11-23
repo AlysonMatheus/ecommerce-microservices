@@ -17,9 +17,11 @@ import org.springframework.context.annotation.Import;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
@@ -224,14 +226,19 @@ class StockServiceIT {
             OrderCreatedEvent event = eventWith(orderId, new OrderCreatedEvent.Item(productId, 4));
             stockService.handleOrderCreated(event);
             stockService.handleOrderCreated(event);
-            Integer processedEvents  = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM processed_events WHERE event_id = ?  ",Integer.class, event.eventId());
+            Integer processedEvents = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM processed_events WHERE event_id = ?  ", Integer.class, event.eventId());
 
             Integer outboxEvents = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ? AND routing_key =? ", Integer.class, orderId,"stock.reserved");
+                    "SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ? AND routing_key =? ", Integer.class, orderId, "stock.reserved");
 
             assertThat(processedEvents).isEqualTo(1);
             assertThat(outboxEvents).isEqualTo(1);
+            Map<String, Object> stock = jdbcTemplate.queryForMap(
+                    "SELECT available, reserved FROM stock WHERE product_id = ?", productId);
+
+            assertThat(stock.get("available")).isEqualTo(2);
+            assertThat(stock.get("reserved")).isEqualTo(4);
 
         }
     }
@@ -242,12 +249,48 @@ class StockServiceIT {
 
         @Test
         @DisplayName("Nunca deve reservar mais unidades do que o saldo com pedidos simultâneos")
-        void handleOrderCreated_concurrentOrders_neverReservesMoreThanAvailable() {
+        void handleOrderCreated_concurrentOrders_neverReservesMoreThanAvailable() throws Exception {
+            int initialStock = 5;
+            int threads = 10;
+            UUID productId = UUID.randomUUID();
+            insertStock(productId, initialStock);
+
+            ExecutorService executor = Executors.newFixedThreadPool(threads);
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<Object>> futures = new ArrayList<>();
+
+            for (int i = 0; i < threads; i++) {
+                OrderCreatedEvent event = eventWith(
+                        UUID.randomUUID(), new OrderCreatedEvent.Item(productId, 1));
+
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    stockService.handleOrderCreated(event);
+                    return null;
+                }));
+            }
+
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            for (Future<Object> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+            executor.shutdown();
+
+            Map<String, Object> row = jdbcTemplate.queryForMap(
+                    "SELECT available, reserved FROM stock WHERE product_id = ?", productId);
+
+            assertThat(row.get("reserved")).isEqualTo(initialStock);
+            assertThat(row.get("available")).isEqualTo(0);
         }
 
         @Test
         @DisplayName("Deve gravar um resultado no outbox para cada pedido simultâneo")
         void handleOrderCreated_concurrentOrders_recordsOneOutcomePerOrder() {
+
         }
 
         @Test
