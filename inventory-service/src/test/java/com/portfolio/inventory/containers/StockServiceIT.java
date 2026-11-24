@@ -386,7 +386,58 @@ class StockServiceIT {
 
         @Test
         @DisplayName("Deve desfazer a reserva quando a gravação do outbox falha")
-        void handleOrderCreated_outboxFails_rollsBackReservation() {
+        void handleOrderCreated_outboxFails_rollsBackReservation() throws Exception{
+            int initialStock = 5;
+            int threads = 10;
+            UUID productId = UUID.randomUUID();
+            insertStock(productId, initialStock);
+
+            List<OrderCreatedEvent> events = IntStream.range(0, threads)
+                    .mapToObj(i -> eventWith(UUID.randomUUID(), new OrderCreatedEvent.Item(productId, 1)))
+                    .toList();
+
+            ExecutorService executor = Executors.newFixedThreadPool(threads);
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<?>> futures = new ArrayList<>();
+
+            for (OrderCreatedEvent event : events) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    stockService.handleOrderCreated(event);
+                    return null;
+                }));
+            }
+
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            for (Future<?> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+            executor.shutdown();
+            Map<String, Object> stockRow = jdbcTemplate.queryForMap(
+                    "SELECT available, reserved FROM stock WHERE product_id = ?",
+                    productId
+            );
+            assertThat(stockRow.get("available")).isEqualTo(0);
+            assertThat(stockRow.get("reserved")).isEqualTo(5);
+
+            Integer reservedEvents = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM outbox_events WHERE routing_key = ?",
+                    Integer.class,
+                    RabbitConfig.STOCK_RESERVED_KEY
+            );
+            assertThat(reservedEvents).isEqualTo(5);
+
+            Integer rejectedEvents = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM outbox_events WHERE routing_key = ?",
+                    Integer.class,
+                    RabbitConfig.STOCK_REJECTED_KEY
+            );
+            assertThat(rejectedEvents).isEqualTo(5);
+
         }
     }
 
