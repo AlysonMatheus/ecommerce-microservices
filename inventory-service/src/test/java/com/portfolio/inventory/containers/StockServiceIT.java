@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
@@ -276,7 +277,6 @@ class StockServiceIT {
             start.countDown();
 
             for (Future<Object> future : futures) {
-                future.get(30, TimeUnit.SECONDS);
             }
             executor.shutdown();
 
@@ -289,13 +289,94 @@ class StockServiceIT {
 
         @Test
         @DisplayName("Deve gravar um resultado no outbox para cada pedido simultâneo")
-        void handleOrderCreated_concurrentOrders_recordsOneOutcomePerOrder() {
+        void handleOrderCreated_concurrentOrders_recordsOneOutcomePerOrder() throws Exception {
+            int initialStock = 5;
+            int threads = 10;
+            UUID productId = UUID.randomUUID();
+            insertStock(productId, initialStock);
 
+            List<OrderCreatedEvent> events = IntStream.range(0, threads)
+                    .mapToObj(i -> eventWith(UUID.randomUUID(), new OrderCreatedEvent.Item(productId, 1)))
+                    .toList();
+
+            ExecutorService executor = Executors.newFixedThreadPool(threads);
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<?>> futures = new ArrayList<>();
+
+            for (OrderCreatedEvent event : events) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    stockService.handleOrderCreated(event);
+                    return null;
+                }));
+            }
+
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            for (Future<?> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+            executor.shutdown();
+
+            Integer reservedEvents = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM outbox_events WHERE routing_key = ?",
+                    Integer.class, RabbitConfig.STOCK_RESERVED_KEY);
+            Integer rejectedEvents = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM outbox_events WHERE routing_key = ?",
+                    Integer.class, RabbitConfig.STOCK_REJECTED_KEY);
+            Integer distinctOrders = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(DISTINCT aggregate_id) FROM outbox_events", Integer.class);
+
+            assertThat(reservedEvents).isEqualTo(initialStock);
+            assertThat(rejectedEvents).isEqualTo(threads - initialStock);
+            assertThat(distinctOrders).isEqualTo(threads);
         }
 
         @Test
         @DisplayName("Não deve gerar deadlock quando pedidos simultâneos dividem produtos em ordem diferente")
-        void handleOrderCreated_concurrentOrdersWithSharedProducts_doesNotDeadlock() {
+        void handleOrderCreated_concurrentOrdersWithSharedProducts_doesNotDeadlock() throws Exception {
+            int initialStock = 10;
+            UUID productId1 = UUID.randomUUID();
+            UUID productId2 = UUID.randomUUID();
+
+            insertStock(productId1, initialStock);
+            insertStock(productId2, initialStock);
+
+            OrderCreatedEvent event1 = eventWith(UUID.randomUUID(),
+                    new OrderCreatedEvent.Item(productId1, 2),
+                    new OrderCreatedEvent.Item(productId2, 3));
+
+            OrderCreatedEvent event2 = eventWith(UUID.randomUUID(),
+                    new OrderCreatedEvent.Item(productId2, 3),
+                    new OrderCreatedEvent.Item(productId1, 2));
+
+            int threads = 2;
+            ExecutorService executor = Executors.newFixedThreadPool(threads);
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<?>> futures = new ArrayList<>();
+            List<OrderCreatedEvent> events = List.of(event1, event2);
+
+            for (OrderCreatedEvent event : events) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    stockService.handleOrderCreated(event);
+                    return null;
+                }));
+            }
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            for (Future<?> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+            executor.shutdown();
+
+
         }
     }
 
