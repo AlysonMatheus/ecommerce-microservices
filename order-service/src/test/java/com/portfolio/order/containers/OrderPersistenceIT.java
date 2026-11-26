@@ -34,8 +34,7 @@ class OrderPersistenceIT {
 
     @Autowired
     OrderService orderService;
-    @Autowired
-    OrderRepository orderRepository;
+
     @Autowired
     JdbcTemplate jdbcTemplate;
 

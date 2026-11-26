@@ -1,7 +1,10 @@
 package com.portfolio.inventory.containers;
 
 
+import com.portfolio.inventory.dtos.request.StockRequest;
+import com.portfolio.inventory.dtos.response.StockResponse;
 import com.portfolio.inventory.entity.Stock;
+import com.portfolio.inventory.execption.StockAlreadyExistsException;
 import com.portfolio.inventory.messaging.config.RabbitConfig;
 import com.portfolio.inventory.messaging.event.OrderCreatedEvent;
 import com.portfolio.inventory.service.StockService;
@@ -24,7 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.stream.IntStream;
 
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.*;
 
 @SpringBootTest
 @Import(ContainersConfig.class)
@@ -35,10 +38,7 @@ class StockServiceIT {
     private StockService stockService;
     @Autowired
     private JdbcTemplate jdbcTemplate;
-    // @Autowired StockService e JdbcTemplate.
-    // @BeforeEach limpa as tabelas: outbox_events, processed_events e stock.
-    // Sem @Transactional na classe: o commit precisa acontecer de verdade.
-    // Um helper para cadastrar estoque e outro para montar o OrderCreatedEvent.
+
 
     @BeforeEach
     void cleanDatabase() {
@@ -386,7 +386,7 @@ class StockServiceIT {
 
         @Test
         @DisplayName("Deve desfazer a reserva quando a gravação do outbox falha")
-        void handleOrderCreated_outboxFails_rollsBackReservation() throws Exception{
+        void handleOrderCreated_outboxFails_rollsBackReservation() throws Exception {
             int initialStock = 5;
             int threads = 10;
             UUID productId = UUID.randomUUID();
@@ -417,6 +417,7 @@ class StockServiceIT {
                 future.get(30, TimeUnit.SECONDS);
             }
             executor.shutdown();
+
             Map<String, Object> stockRow = jdbcTemplate.queryForMap(
                     "SELECT available, reserved FROM stock WHERE product_id = ?",
                     productId
@@ -448,11 +449,34 @@ class StockServiceIT {
         @Test
         @DisplayName("Deve gravar o novo produto com reserved zerado")
         void create_newProduct_persistsStockWithZeroReserved() {
+            UUID productId = UUID.randomUUID();
+            StockRequest request = new StockRequest(productId, 10);
+
+            stockService.create(request);
+
+            Map<String, Object> row = jdbcTemplate.queryForMap(
+                    "SELECT available, reserved FROM stock WHERE product_id = ?", productId);
+
+            assertThat(row.get("available")).isEqualTo(10);
+            assertThat(row.get("reserved")).isEqualTo(0);
         }
 
         @Test
         @DisplayName("Deve lançar StockAlreadyExistsException e preservar o estoque existente")
         void create_existingProduct_throwsAndKeepsExistingStock() {
+            UUID productId = UUID.randomUUID();
+            jdbcTemplate.update(
+                    "INSERT INTO stock (product_id, available, reserved) VALUES (?, 10, 3)",
+                    productId);
+            StockRequest request = new StockRequest(productId, 99);
+
+            assertThatThrownBy(() -> stockService.create(request))
+                    .isInstanceOf(StockAlreadyExistsException.class);
+
+            Map<String, Object> row = jdbcTemplate.queryForMap(
+                    "SELECT available, reserved FROM stock WHERE product_id = ?", productId);
+            assertThat(row.get("available")).isEqualTo(10);
+            assertThat(row.get("reserved")).isEqualTo(3);
         }
     }
 }
